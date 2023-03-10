@@ -4,6 +4,8 @@ import math
 import os
 import random
 import time
+import torch
+import nncf
 from copy import deepcopy
 from pathlib import Path
 from threading import Thread
@@ -34,6 +36,10 @@ from utils.loss import ComputeLoss, ComputeLossOTA
 from utils.plots import plot_images, plot_labels, plot_results, plot_evolution
 from utils.torch_utils import ModelEMA, select_device, intersect_dicts, torch_distributed_zero_first, is_parallel
 from utils.wandb_logging.wandb_utils import WandbLogger, check_wandb_resume
+
+from collections.abc import Iterable
+from nncf import NNCFConfig
+from nncf.torch import create_compressed_model, register_default_init_args
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +87,7 @@ def train(hyp, opt, device, tb_writer=None):
 
     # Model
     pretrained = weights.endswith('.pt')
+    pretrained = False
     if pretrained:
         with torch_distributed_zero_first(rank):
             attempt_download(weights)  # download if not found locally
@@ -95,8 +102,8 @@ def train(hyp, opt, device, tb_writer=None):
         model = Model(opt.cfg, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
     with torch_distributed_zero_first(rank):
         check_dataset(data_dict)  # check
-    train_path = data_dict['train']
-    test_path = data_dict['val']
+    train_path = os.path.join(data_dict['train'])
+    test_path = os.path.join(data_dict['val'])
 
     # Freeze
     freeze = [f'model.{x}.' for x in (freeze if len(freeze) > 1 else range(freeze[0]))]  # parameter names to freeze (full or partial)
@@ -290,6 +297,20 @@ def train(hyp, opt, device, tb_writer=None):
     model.names = names
 
     # Start training
+    sample_size = [1,3,opt.img_size[0], opt.img_size[1]] if isinstance(opt.img_size, Iterable) else [1, 3, opt.img_size, opt.img_size]
+    nncf_config_dict = {
+        "input_info": {"sample_size": sample_size},
+        "log_dir": f"{opt.name}/nncf-output",
+        "compression": {
+            "algorithm": "quantization" 
+        }
+    }
+    nncf_config = NNCFConfig.from_dict(nncf_config_dict)
+    nncf_config = register_default_init_args(nncf_config, dataloader)
+    compression_ctrl, model = create_compressed_model(model, nncf_config)
+    compression_lr = opt.lr / 10
+    optimizer = torch.optim.Adam(model.parameters(), lr=compression_lr)
+
     t0 = time.time()
     nw = max(round(hyp['warmup_epochs'] * nb), 1000)  # number of warmup iterations, max(3 epochs, 1k iterations)
     # nw = min(nw, (epochs - start_epoch) / 2 * nb)  # limit warmup to < 1/2 of training

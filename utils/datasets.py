@@ -29,6 +29,9 @@ from torchvision.ops import roi_pool, roi_align, ps_roi_pool, ps_roi_align
 from utils.general import check_requirements, xyxy2xywh, xywh2xyxy, xywhn2xyxy, xyn2xy, segment2box, segments2boxes, \
     resample_segments, clean_str
 from utils.torch_utils import torch_distributed_zero_first
+from nncf.torch.initialization import PTInitializingDataLoader
+from typing import Any, Tuple, Dict, Iterator
+from torch.utils.data.dataloader import DataLoader
 
 # Parameters
 help_url = 'https://github.com/ultralytics/yolov5/wiki/Train-Custom-Data'
@@ -89,6 +92,26 @@ def create_dataloader(path, imgsz, batch_size, stride, opt, hyp=None, augment=Fa
                         pin_memory=True,
                         collate_fn=LoadImagesAndLabels.collate_fn4 if quad else LoadImagesAndLabels.collate_fn)
     return dataloader, dataset
+
+class InitLoader(PTInitializingDataLoader):
+    def __init__(self, data_loader: DataLoader):
+        super().__init__(data_loader)
+        self._data_loader_iter: Iterator
+
+    def __iter__(self):
+        """Create iterator for dataloader."""
+        self._data_loader_iter = iter(self._data_loader)
+        return self
+    def __next__(self) -> Any:
+        """Return next item from dataloader iterator."""
+        loaded_item = next(self._data_loader_iter)
+        return loaded_item["image"]
+
+    def get_inputs(self, dataloader_output: Any) -> Tuple[Tuple, Dict]:
+        return (dataloader_output[0],), {}
+
+    def get_target(self, dataloader_output: Any) -> Any:
+        return dataloader_output[1]
 
 
 class InfiniteDataLoader(torch.utils.data.dataloader.DataLoader):

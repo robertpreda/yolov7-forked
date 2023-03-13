@@ -27,7 +27,7 @@ import test  # import test.py to get mAP after each epoch
 from models.experimental import attempt_load
 from models.yolo import Model
 from utils.autoanchor import check_anchors
-from utils.datasets import create_dataloader
+from utils.datasets import create_dataloader, InitLoader
 from utils.general import labels_to_class_weights, increment_path, labels_to_image_weights, init_seeds, \
     fitness, strip_optimizer, get_latest_run, check_dataset, check_file, check_git_status, check_img_size, \
     check_requirements, print_mutation, set_logging, one_cycle, colorstr
@@ -305,12 +305,18 @@ def train(hyp, opt, device, tb_writer=None):
             "algorithm": "quantization" 
         }
     }
+
+   
+    init_dataloader = InitLoader(dataloader)
     nncf_config = NNCFConfig.from_dict(nncf_config_dict)
-    nncf_config = register_default_init_args(nncf_config, dataloader)
+    nncf_config = register_default_init_args(nncf_config, init_dataloader)
+    print("Creating compressed model")
     compression_ctrl, model = create_compressed_model(model, nncf_config)
     compression_lr = opt.lr / 10
+    print("Successfully created compressed model")
     optimizer = torch.optim.Adam(model.parameters(), lr=compression_lr)
-
+    print("Created optimizer for compresed model")
+    exit()
     t0 = time.time()
     nw = max(round(hyp['warmup_epochs'] * nb), 1000)  # number of warmup iterations, max(3 epochs, 1k iterations)
     # nw = min(nw, (epochs - start_epoch) / 2 * nb)  # limit warmup to < 1/2 of training
@@ -327,7 +333,7 @@ def train(hyp, opt, device, tb_writer=None):
     torch.save(model, wdir / 'init.pt')
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
         model.train()
-
+        compression_ctrl.scheduler.epoch_step()
         # Update image weights (optional)
         if opt.image_weights:
             # Generate indices
@@ -354,7 +360,8 @@ def train(hyp, opt, device, tb_writer=None):
         if rank in [-1, 0]:
             pbar = tqdm(pbar, total=nb)  # progress bar
         optimizer.zero_grad()
-        for i, (imgs, targets, paths, _) in pbar:  # batch -------------------------------------------------------------
+        for i, (imgs, targets, paths, _) in pbar:
+            compression_ctrl.scheduler.step()
             ni = i + nb * epoch  # number integrated batches (since train start)
             imgs = imgs.to(device, non_blocking=True).float() / 255.0  # uint8 to float32, 0-255 to 0.0-1.0
 
